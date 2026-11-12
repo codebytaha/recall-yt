@@ -38,7 +38,7 @@ The toolbar icon is Recall.
 
 1. Open a YouTube watch page that has captions.
 2. Click **Quiz me every 10 min** on the player. The number matches the interval you saved.
-3. Let the playhead reach the next stop. Recall pauses the video and covers the frame. If that stop would pass the end of the video, the last quiz runs in the final 2 seconds instead. The popup does not show a checkpoint past the video.
+3. Let the playhead reach the next stop. About a minute before that stop, Recall writes the quiz for the whole stretch in the background. The video keeps playing. At the stop it pauses on the questions. If that stop would pass the end of the video, the last quiz runs in the final 2 seconds instead. The popup does not show a checkpoint past the video.
 4. The cover lists the work in order: **Getting the transcript**, **Calling OpenAI** (or Gemini, or the saved host), **Writing the questions**, then **Checking the questions**. The current row moves. A finished row turns green.
 5. Answer the question. Press **1**, **2**, **3**, or **4**. The caption line appears after the answer.
 6. Click **Continue**. The video plays again. The popup shows the last score.

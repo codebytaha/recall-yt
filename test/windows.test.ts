@@ -7,6 +7,7 @@ import {
   reconcileStop,
   resolvePlayback,
   scheduleStop,
+  shouldPrefetch,
   sliceCues,
   type PlaybackSample,
 } from "../src/shared/windows.ts";
@@ -194,5 +195,12 @@ describe("resolvePlayback", () => {
     assert.equal(decision.checkpoint?.startMs, anchorMs);
     assert.equal(decision.checkpoint?.endMs, finalStop);
     assert.ok(decision.nextStopMs > durationMs);
+  });
+
+  test("starts the quiz a minute before the stop", () => {
+    const stopMs = 20 * 60 * 1000;
+    assert.equal(shouldPrefetch(19 * 60 * 1000, stopMs), true);
+    assert.equal(shouldPrefetch(18 * 60 * 1000, stopMs), false);
+    assert.equal(shouldPrefetch(stopMs, stopMs), false);
   });
 });

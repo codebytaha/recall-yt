@@ -33,7 +33,7 @@ import {
   type Quiz,
   type VideoMemory,
 } from "../shared/types.ts";
-import { resolvePlayback, reconcileStop, scheduleStop, sliceCues, MODEL_REQUEST_MS, knownDuration } from "../shared/windows.ts";
+import { knownDuration, MIN_SPEECH_WORDS, MODEL_REQUEST_MS, reconcileStop, resolvePlayback, scheduleStop, shouldPrefetch, sliceCues, windowWordCount } from "../shared/windows.ts";
 import {
   failWait,
   markCalling,
@@ -165,6 +165,18 @@ let waitButtons: ProgressButton[] = [];
 let waitTimer = 0;
 let waitStarted = 0;
 let quizPort: RecallPort | null = null;
+
+interface PreparedQuiz {
+  key: string;
+  due: DueWindow;
+  status: "running" | "ready" | "failed";
+  questions: unknown | null;
+  error: string | null;
+}
+
+let prepared: PreparedQuiz | null = null;
+let preparedPort: RecallPort | null = null;
+let preparedReveal = false;
 
 async function boot(): Promise<void> {
   window.addEventListener("keydown", onWindowKey, true);
@@ -399,6 +411,7 @@ function onTimeUpdate(): void {
 
   if (!decision.checkpoint) {
     if (decision.nextStopMs !== previousStop) persist();
+    maybePrefetch(now);
     return;
   }
 
@@ -422,6 +435,187 @@ function onEnded(): void {
   showRecap();
 }
 
+function prefetchKey(videoId: string, startMs: number, endMs: number, questionsPerStop: number): string {
+  return `${videoId}:${startMs}:${endMs}:${questionsPerStop}`;
+}
+
+function cuesReach(cues: readonly Cue[], endMs: number): boolean {
+  let last = 0;
+  for (const cue of cues) last = Math.max(last, cue.endMs);
+  return last >= endMs - 2_000;
+}
+
+function maybePrefetch(nowMs: number): void {
+  if (!session || holdClock || session.cues.length === 0) return;
+  const startMs = session.anchorMs;
+  const endMs = session.nextStopMs;
+  const key = prefetchKey(session.videoId, startMs, endMs, settings.questionsPerStop);
+  const readyToStart =
+    shouldPrefetch(nowMs, endMs) &&
+    cuesReach(session.cues, endMs) &&
+    windowWordCount(session.cues, startMs, endMs) >= MIN_SPEECH_WORDS;
+  if (!readyToStart) {
+    if (prepared && prepared.key !== key) cancelPrefetch();
+    return;
+  }
+  if (prepared?.key === key) return;
+  cancelPrefetch();
+  startPrefetch(key, startMs, endMs);
+}
+
+function startPrefetch(key: string, startMs: number, endMs: number): void {
+  if (!session) return;
+  const dueWindow: DueWindow = {
+    checkpoint: {
+      videoId: session.videoId,
+      startMs,
+      endMs,
+      status: "pending",
+    },
+    cues: snapshotCues(session.cues, startMs, endMs),
+    questionsPerStop: settings.questionsPerStop,
+  };
+  prepared = { key, due: dueWindow, status: "running", questions: null, error: null };
+  preparedReveal = false;
+  renderChip();
+  const api = browserOrNull();
+  if (!api?.runtime.connect) {
+    void prefetchByMessage(dueWindow);
+    return;
+  }
+  let port: RecallPort;
+  try {
+    port = api.runtime.connect({ name: "recall-quiz" });
+  } catch {
+    void prefetchByMessage(dueWindow);
+    return;
+  }
+  preparedPort = port;
+  let settled = false;
+  port.onMessage.addListener((message) => {
+    if (settled || prepared?.key !== key || !isRecord(message)) return;
+    if (message.type === "result") {
+      settled = true;
+      finishPrefetch(key, message);
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    if (settled || prepared?.key !== key) return;
+    settled = true;
+    finishPrefetch(key, { ok: false, error: "request-failed" });
+  });
+  try {
+    port.postMessage({
+      type: "GENERATE_QUIZ",
+      videoId: dueWindow.checkpoint.videoId,
+      startMs,
+      endMs,
+      cues: dueWindow.cues,
+      questionsPerStop: dueWindow.questionsPerStop,
+    });
+  } catch {
+    settled = true;
+    void prefetchByMessage(dueWindow);
+  }
+}
+
+async function prefetchByMessage(dueWindow: DueWindow): Promise<void> {
+  const key = prefetchKey(
+    dueWindow.checkpoint.videoId,
+    dueWindow.checkpoint.startMs,
+    dueWindow.checkpoint.endMs,
+    dueWindow.questionsPerStop,
+  );
+  const api = browserOrNull();
+  let response: unknown;
+  try {
+    if (!api) throw new Error("chrome is unavailable");
+    response = await api.runtime.sendMessage({
+      type: "GENERATE_QUIZ",
+      videoId: dueWindow.checkpoint.videoId,
+      startMs: dueWindow.checkpoint.startMs,
+      endMs: dueWindow.checkpoint.endMs,
+      cues: dueWindow.cues,
+      questionsPerStop: dueWindow.questionsPerStop,
+    });
+  } catch {
+    response = { ok: false, error: "request-failed" };
+  }
+  if (prepared?.key !== key) return;
+  finishPrefetch(key, response);
+}
+
+function finishPrefetch(key: string, response: unknown): void {
+  if (!prepared || prepared.key !== key) return;
+  const parsed = readWorkerResult(response);
+  if ("error" in parsed) {
+    prepared.status = "failed";
+    prepared.error = parsed.error;
+  } else {
+    const validated = validateQuiz({
+      videoId: prepared.due.checkpoint.videoId,
+      startMs: prepared.due.checkpoint.startMs,
+      endMs: prepared.due.checkpoint.endMs,
+      cues: prepared.due.cues,
+      expectedCount: prepared.due.questionsPerStop,
+      questions: parsed.questions,
+    });
+    if (!validated.ok) {
+      prepared.status = "failed";
+      prepared.error = "invalid-quiz";
+    } else {
+      prepared.status = "ready";
+      prepared.questions = validated.quiz.questions;
+    }
+  }
+  const port = preparedPort;
+  preparedPort = null;
+  try {
+    port?.disconnect();
+  } catch {
+    // The port is already closed.
+  }
+  renderChip();
+  if (!preparedReveal || !due || prefetchKey(due.checkpoint.videoId, due.checkpoint.startMs, due.checkpoint.endMs, due.questionsPerStop) !== key) {
+    return;
+  }
+  preparedReveal = false;
+  const result = prepared;
+  prepared = null;
+  if (result.status === "ready") {
+    presentQuiz(due, { ok: true, quiz: { questions: result.questions } });
+    return;
+  }
+  showWaitFailure(result.error ?? "request-failed");
+}
+
+function showPreparedWait(windowDue: DueWindow): void {
+  if (!cover) return;
+  const label = providerLabel(settings);
+  waitSnapshot = openWait({
+    providerLabel: label,
+    lineCount: windowDue.cues.length,
+    startMs: windowDue.checkpoint.startMs,
+    endMs: windowDue.checkpoint.endMs,
+  });
+  waitSnapshot = markCalling(waitSnapshot, label);
+  waitButtons = [notWatchingButton()];
+  progressHandle?.destroy();
+  progressHandle = mountProgress(cover, viewFromWait(waitSnapshot, waitButtons));
+}
+
+function cancelPrefetch(): void {
+  preparedReveal = false;
+  prepared = null;
+  const port = preparedPort;
+  preparedPort = null;
+  try {
+    port?.disconnect();
+  } catch {
+    // The port is already closed.
+  }
+}
+
 function beginQuiz(checkpoint: Checkpoint, cues: readonly Cue[]): void {
   const video = boundVideo;
   const player = video ? playerFor(video) : findPlayer();
@@ -437,6 +631,19 @@ function beginQuiz(checkpoint: Checkpoint, cues: readonly Cue[]): void {
     cues: snapshotCues(cues, checkpoint.startMs, checkpoint.endMs),
     questionsPerStop: settings.questionsPerStop,
   };
+  const key = prefetchKey(checkpoint.videoId, checkpoint.startMs, checkpoint.endMs, settings.questionsPerStop);
+  if (prepared?.key === key && prepared.status === "ready" && prepared.questions != null) {
+    const questions = prepared.questions;
+    cancelPrefetch();
+    presentQuiz(due, { ok: true, quiz: { questions } });
+    return;
+  }
+  if (prepared?.key === key && prepared.status === "running") {
+    preparedReveal = true;
+    showPreparedWait(due);
+    return;
+  }
+  cancelPrefetch();
   void requestQuiz(due);
 }
 
@@ -796,6 +1003,7 @@ function closeCover(): void {
 }
 
 function tearDownOverlay(): void {
+  cancelPrefetch();
   closeCover();
   clearSkipNote();
 }
@@ -914,6 +1122,12 @@ function paintChip(host: HTMLElement): void {
     const interval = paperButton(`Every ${settings.intervalMinutes} min`, () => void setArmed(false));
     interval.setAttribute("aria-label", "Turn Recall off");
     chip.append(interval);
+    if (prepared?.status === "running" || prepared?.status === "ready") {
+      const line = document.createElement("p");
+      line.className = "line";
+      line.textContent = prepared.status === "ready" ? "Quiz is ready." : "Preparing the quiz.";
+      chip.append(line);
+    }
   }
 
   shadow.append(chip);

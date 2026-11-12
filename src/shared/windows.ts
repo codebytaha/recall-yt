@@ -88,6 +88,14 @@ export function scheduleStop(anchorMs: number, intervalMs: number, durationMs: n
   return Math.min(intervalStop, finalStop);
 }
 
+/** Start the quiz this long before the stop, while the video keeps playing. */
+export const PREFETCH_LEAD_MS = 60_000;
+
+export function shouldPrefetch(nowMs: number, stopMs: number): boolean {
+  const remaining = stopMs - nowMs;
+  return remaining > 0 && remaining <= PREFETCH_LEAD_MS;
+}
+
 /** Pull a saved stop back when it sits past the real video. */
 export function reconcileStop(
   anchorMs: number,
