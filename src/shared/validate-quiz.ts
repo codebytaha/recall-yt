@@ -114,6 +114,10 @@ function readQuestion(
   if (distinct.size !== 4) {
     return { ok: false, reason: `${label} choices must be distinct` };
   }
+  const balance = choiceBalanceProblem(choiceTexts);
+  if (balance !== null) {
+    return { ok: false, reason: `${label} ${balance}` };
+  }
 
   const correctIndex = value.correctIndex;
   if (!isChoiceIndex(correctIndex)) {
@@ -171,6 +175,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isChoiceIndex(value: unknown): value is 0 | 1 | 2 | 3 {
   return value === 0 || value === 1 || value === 2 || value === 3;
+}
+
+/** A choice set is balanced when no option stands out by length or by explaining itself. */
+export function choiceBalanceProblem(choices: readonly string[]): string | null {
+  const texts = choices.map((choice) => normalizeWhitespace(choice));
+  if (texts.some(isGiveawayChoice)) {
+    return "choices include a giveaway such as all of the above";
+  }
+  if (texts.filter(explainsItself).length === 1) {
+    return "one choice explains itself and the others do not";
+  }
+  const lengths = texts.map((text) => text.length).sort((left, right) => left - right);
+  const longest = lengths[lengths.length - 1] ?? 0;
+  const next = lengths[lengths.length - 2] ?? 0;
+  if (longest >= next + 15 && longest > next * 1.8) {
+    return "one choice is much longer than the others";
+  }
+  return null;
+}
+
+function isGiveawayChoice(text: string): boolean {
+  const lower = text.toLowerCase();
+  return lower === "all of the above" || lower === "none of the above";
+}
+
+function explainsItself(text: string): boolean {
+  return /\bbecause\b/iu.test(text) || /\bwhich means\b/iu.test(text);
 }
 
 function shuffle<T>(items: readonly T[], random: () => number): T[] {

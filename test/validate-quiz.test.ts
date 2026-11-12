@@ -154,4 +154,50 @@ describe("validateQuiz", () => {
     assert.equal(second.prompt, taggedPrompt);
     assert.equal(second.sourceExcerpt, "mitochondria make energy");
   });
+
+  test("rejects a choice that is much longer than the other three", () => {
+    const result = validate([
+      question({
+        choices: [
+          "ATP",
+          "DNA",
+          "The mitochondria produce ATP by oxidative phosphorylation along the inner membrane of the cell",
+          "RNA",
+        ],
+      }),
+      secondQuestion(),
+    ]);
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.reason, /much longer/);
+  });
+
+  test("rejects a choice that explains itself while the others do not", () => {
+    const result = validate([
+      question({
+        choices: [
+          "ATP because it stores energy",
+          "stored sugar",
+          "cell wall lipid",
+          "plant pigment",
+        ],
+      }),
+      secondQuestion(),
+    ]);
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.reason, /explains itself/);
+  });
+
+  test("rejects all of the above", () => {
+    const result = validate([
+      question({
+        choices: ["ATP", "DNA", "RNA", "all of the above"],
+      }),
+      secondQuestion(),
+    ]);
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.reason, /giveaway/);
+  });
 });
