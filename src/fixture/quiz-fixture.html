@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Recall quiz</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #f6f3ee;
+        color: #1c1917;
+      }
+
+      body {
+        min-height: 100vh;
+        font-family: system-ui, sans-serif;
+      }
+
+      #quiz {
+        min-height: 100vh;
+      }
+
+      #log {
+        position: fixed;
+        left: 16px;
+        bottom: 16px;
+        margin: 0;
+        max-width: 480px;
+        font-size: 13px;
+        line-height: 18px;
+        color: #57534e;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- fixture.js is produced by the build and emitted next to this file. -->
+    <main id="quiz"></main>
+    <p id="log" aria-live="polite"></p>
+    <script type="module" src="./fixture.js"></script>
+  </body>
+</html>

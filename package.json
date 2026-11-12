@@ -1,0 +1,17 @@
+{
+  "name": "recall",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Recall, a YouTube active-recall extension. Shared quiz core.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "build": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

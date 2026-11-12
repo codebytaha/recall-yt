@@ -1,0 +1,160 @@
+:root {
+  color-scheme: light;
+  --paper: #f6f3ee;
+  --ink: #1c1917;
+  --soft: #57534e;
+  --line: #e7e0d6;
+  --remembered: #1f6b4a;
+  --missed: #9a3412;
+  --radius: 14px;
+  --motion: 180ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Iowan Old Style", Palatino, "Palatino Linotype", "Book Antiqua", serif;
+}
+
+main {
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 3rem;
+}
+
+h1 {
+  margin: 0 0 1.5rem;
+  font-size: 2.25rem;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+label,
+input,
+select,
+button,
+.quiet,
+.notice {
+  font-family: system-ui, sans-serif;
+}
+
+label {
+  color: var(--soft);
+  font-size: 0.8125rem;
+}
+
+input,
+select,
+button {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 1rem;
+  padding: 0 0.9rem;
+}
+
+input::placeholder {
+  color: var(--soft);
+}
+
+button {
+  cursor: pointer;
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+  transition: background-color var(--motion) ease-out;
+}
+
+button:hover {
+  background: #292524;
+}
+
+#test-key {
+  background: transparent;
+  color: var(--ink);
+}
+
+#test-key:hover {
+  background: #efeae3;
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+input:focus,
+select:focus,
+button:focus {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.quiet {
+  margin: 0;
+  color: var(--soft);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.actions button {
+  flex: 1;
+}
+
+.notice {
+  min-height: 1.4em;
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+}
+
+.notice.ok {
+  color: var(--remembered);
+}
+
+.notice.miss {
+  color: var(--missed);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

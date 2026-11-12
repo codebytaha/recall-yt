@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Recall</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Recall</h1>
+      <label class="arm">
+        <input id="armed" type="checkbox" />
+        <span>Quiz me on YouTube</span>
+      </label>
+      <p id="arm-copy" class="quiet">Off until you turn it on.</p>
+      <p id="checkpoint" class="status" hidden></p>
+      <p id="score" class="status" hidden></p>
+      <p id="empty" class="quiet">Open a lesson and press play.</p>
+      <button type="button" id="settings">Settings</button>
+    </main>
+    <script type="module" src="popup.ts"></script>
+  </body>
+</html>
