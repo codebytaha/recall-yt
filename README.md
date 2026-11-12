@@ -41,7 +41,7 @@ The toolbar icon is Recall.
 3. Let the playhead reach the next stop. About a minute before that stop, Recall writes the quiz for the whole stretch in the background. The video keeps playing. At the stop it pauses on the questions. If that stop would pass the end of the video, the last quiz runs in the final 2 seconds instead. The popup does not show a checkpoint past the video.
 4. The cover lists the work in order: **Getting the transcript**, **Calling OpenAI** (or Gemini, or the saved host), **Writing the questions**, then **Checking the questions**. The current row moves. A finished row turns green. Questions practice the idea in the form the lesson uses, such as a short coding, math, or language item. The four choices stay similar in length, so none of them looks like the answer.
 5. Answer the question. Press **1**, **2**, **3**, or **4**. The caption line appears after the answer.
-6. Click **Continue**. The video plays again. The popup shows the last score.
+6. Click **Continue**. The video plays again. The popup shows the last score. A missed card is due again in 10 minutes. A remembered card is due tomorrow. Open the popup to review due cards, or use **Previous**, **Next**, and **Jump to** to move to another checkpoint.
 
 ## When the cover stops
 

@@ -18,6 +18,7 @@
  */
 
 import { RECALL_SETTINGS_KEY, defaultSettings } from "../shared/defaults.ts";
+import { RECALL_CARDS_KEY, cardFromQuestion, cardId, gradeCard, readCardStore } from "../shared/review.ts";
 import {
   DEFAULT_INTERVAL_MINUTES,
   DEFAULT_QUESTIONS_PER_STOP,
@@ -114,6 +115,15 @@ interface BrowserNamespace {
     sendMessage(message: unknown): Promise<unknown>;
     openOptionsPage(): Promise<void>;
     connect?(info: { name: string }): RecallPort;
+    onMessage: {
+      addListener(
+        listener: (
+          message: unknown,
+          sender: unknown,
+          sendResponse: (response?: unknown) => void,
+        ) => boolean | void,
+      ): void;
+    };
   };
 }
 
@@ -185,7 +195,10 @@ async function boot(): Promise<void> {
   window.addEventListener("yt-navigate-finish", onNavigate);
   window.addEventListener("popstate", onNavigate);
   const api = browserOrNull();
-  if (api) api.storage.onChanged.addListener(onStorage);
+  if (api) {
+    api.storage.onChanged.addListener(onStorage);
+    api.runtime.onMessage.addListener(onPlayerMessage);
+  }
   await hydrate();
   await adopt();
 }
@@ -924,13 +937,83 @@ function finishLive(action: "continue" | "dismiss"): void {
       total: quiz.questions.length,
     };
     if (checkpoint) upsertCheckpoint(asCheckpoint(checkpoint, "quizzed"));
+    persist();
+    rememberCards(quiz, attempts);
   } else if (current && action === "dismiss" && checkpoint) {
     upsertCheckpoint(asCheckpoint(checkpoint, "skipped"));
   }
-  closeCover();
-  persist();
+  if (!(current && action === "continue" && quiz)) {
+    closeCover();
+    persist();
+  } else {
+    closeCover();
+  }
   resumePlayback();
   if (action === "continue" && kind === "checkpoint" && queued) showRecap();
+}
+
+function rememberCards(quiz: Quiz, attempts: Attempt[]): void {
+  const correctById = new Map(attempts.map((attempt) => [attempt.questionId, attempt.correct]));
+  const api = browserOrNull();
+  if (!api) return;
+  persistQueue = persistQueue.catch(() => undefined).then(async () => {
+    const stored = await api.storage.local.get([RECALL_CARDS_KEY]);
+    const cards = readCardStore(stored[RECALL_CARDS_KEY]);
+    const now = Date.now();
+    for (const question of quiz.questions) {
+      const id = cardId(quiz.videoId, question.id);
+      const correct = correctById.get(question.id) === true;
+      const existing = cards[id];
+      cards[id] = existing
+        ? gradeCard(existing, correct ? "good" : "again", now)
+        : cardFromQuestion(quiz.videoId, question, correct, now);
+    }
+    await api.storage.local.set({ [RECALL_CARDS_KEY]: cards });
+  });
+}
+
+function onPlayerMessage(
+  message: unknown,
+  _sender: unknown,
+  sendResponse: (response?: unknown) => void,
+): void {
+  if (!isRecord(message)) return;
+  if (message.type === "LIST_STOPS") {
+    sendResponse({ ok: true, ...listStops() });
+    return;
+  }
+  if (message.type === "SEEK_TO" && typeof message.ms === "number" && Number.isFinite(message.ms)) {
+    sendResponse({ ok: seekToMs(message.ms) });
+  }
+}
+
+function listStops(): {
+  videoId: string | null;
+  currentMs: number;
+  stops: { startMs: number; endMs: number }[];
+} {
+  if (!session) return { videoId: null, currentMs: 0, stops: [] };
+  const stops = session.memory.checkpoints
+    .filter((checkpoint) => checkpoint.status === "quizzed" || checkpoint.status === "skipped")
+    .map((checkpoint) => ({ startMs: checkpoint.startMs, endMs: checkpoint.endMs }));
+  const upcoming = { startMs: session.anchorMs, endMs: session.nextStopMs };
+  if (!stops.some((stop) => stop.startMs === upcoming.startMs) && upcoming.endMs > upcoming.startMs) {
+    stops.push(upcoming);
+  }
+  stops.sort((left, right) => left.startMs - right.startMs);
+  return {
+    videoId: session.videoId,
+    currentMs: boundVideo ? playbackMs(boundVideo) : 0,
+    stops,
+  };
+}
+
+function seekToMs(ms: number): boolean {
+  const video = boundVideo ?? findVideo();
+  if (!video) return false;
+  video.currentTime = Math.max(0, ms) / 1000;
+  void video.play().catch(() => undefined);
+  return true;
 }
 
 function resumeWithoutCheckpoint(): void {

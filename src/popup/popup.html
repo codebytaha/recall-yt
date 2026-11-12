@@ -17,6 +17,29 @@
       <p id="checkpoint" class="status" hidden></p>
       <p id="score" class="status" hidden></p>
       <p id="empty" class="quiet">Open a lesson and press play.</p>
+      <section id="move">
+        <h2>This lesson</h2>
+        <div class="row">
+          <button type="button" id="prev">Previous</button>
+          <button type="button" id="next">Next</button>
+        </div>
+        <label class="jump" for="stops">Jump to</label>
+        <select id="stops"></select>
+        <p id="move-note" class="quiet" hidden></p>
+      </section>
+      <section id="review">
+        <h2>Due today</h2>
+        <p id="review-count" class="quiet">No cards due.</p>
+        <p id="review-prompt" hidden></p>
+        <div id="review-choices" class="choices"></div>
+        <p id="review-result" class="status" hidden></p>
+        <p id="review-excerpt" class="quiet" hidden></p>
+        <div id="review-grades" class="row" hidden>
+          <button type="button" id="again">Again</button>
+          <button type="button" id="good">Good</button>
+          <button type="button" id="easy">Easy</button>
+        </div>
+      </section>
       <button type="button" id="settings">Settings</button>
     </main>
     <script type="module" src="popup.ts"></script>
