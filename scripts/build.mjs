@@ -11,6 +11,7 @@ const extensionEntries = {
   background: "src/background/index.ts",
   "youtube-main": "src/youtube/main.ts",
   "youtube-content": "src/youtube/content.ts",
+  dashboard: "src/dashboard/dashboard.ts",
   options: "src/options/options.ts",
   popup: "src/popup/popup.ts",
 };
@@ -72,6 +73,13 @@ copyPage(
   'src="popup.ts"',
   'src="popup.js"',
 );
+copyPage(
+  path.join(root, "src/dashboard/dashboard.html"),
+  path.join(dist, "dashboard.html"),
+  'src="dashboard.ts"',
+  'src="dashboard.js"',
+);
+fs.copyFileSync(path.join(root, "src/dashboard/dashboard.css"), path.join(dist, "dashboard.css"));
 fs.copyFileSync(path.join(root, "src/options/options.css"), path.join(dist, "options.css"));
 fs.copyFileSync(path.join(root, "src/popup/popup.css"), path.join(dist, "popup.css"));
 fs.mkdirSync(path.join(dist, "fixture"), { recursive: true });

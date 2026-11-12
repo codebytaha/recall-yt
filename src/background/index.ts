@@ -5,7 +5,8 @@ import {
   buildTestKeyRequest,
 } from "./providers.ts";
 import type { ProviderConfigCode, ProviderHttpRequest } from "./providers.ts";
-import { RECALL_SETTINGS_KEY, defaultSettings } from "../shared/defaults.ts";
+import { RECALL_SETTINGS_KEY } from "../shared/defaults.ts";
+import { normalizeSettings } from "../shared/models.ts";
 import { MAX_QUESTIONS_PER_STOP, MIN_QUESTIONS_PER_STOP } from "../shared/types.ts";
 import type { Cue, Quiz, Settings } from "../shared/types.ts";
 import { MODEL_REQUEST_MS } from "../shared/windows.ts";
@@ -176,31 +177,10 @@ async function discardBody(response: { text(): Promise<string> }): Promise<void>
   }
 }
 
-async function readSettings(): Promise<Settings> {
-  const stored = await chrome.storage.local.get(RECALL_SETTINGS_KEY);
-  return normalizeSettings(stored[RECALL_SETTINGS_KEY]);
-}
-
-function normalizeSettings(value: unknown): Settings {
-  const settings: Settings = { ...defaultSettings };
-  if (!isRecord(value)) return settings;
-  if (
-    value.provider === "openai" ||
-    value.provider === "gemini" ||
-    value.provider === "openai-compatible"
-  ) {
-    settings.provider = value.provider;
-  }
-  if (typeof value.model === "string") settings.model = value.model;
-  if (typeof value.baseUrl === "string") settings.baseUrl = value.baseUrl;
-  if (typeof value.apiKey === "string") settings.apiKey = value.apiKey;
-  if (typeof value.intervalMinutes === "number" && Number.isFinite(value.intervalMinutes)) {
-    settings.intervalMinutes = value.intervalMinutes;
-  }
-  if (typeof value.questionsPerStop === "number" && Number.isFinite(value.questionsPerStop)) {
-    settings.questionsPerStop = value.questionsPerStop;
-  }
-  return settings;
+function readSettings(): Promise<Settings> {
+  return chrome.storage.local.get(RECALL_SETTINGS_KEY).then((stored) =>
+    normalizeSettings(stored[RECALL_SETTINGS_KEY]),
+  );
 }
 
 function readGenerateMessage(message: unknown): GenerateQuizMessage | null {

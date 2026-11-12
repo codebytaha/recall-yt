@@ -48,10 +48,22 @@ describe("defaultSettings", () => {
     assert.deepEqual(defaultSettings, {
       intervalMinutes: 10,
       questionsPerStop: 4,
+      activeModelId: "default",
+      models: [
+        {
+          id: "default",
+          name: "OpenAI",
+          provider: "openai",
+          model: "",
+          baseUrl: "",
+          apiKey: "",
+        },
+      ],
       provider: "openai",
       model: "",
       baseUrl: "",
       apiKey: "",
+      name: "OpenAI",
     });
   });
 });

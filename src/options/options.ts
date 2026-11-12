@@ -1,11 +1,12 @@
 import { RECALL_SETTINGS_KEY, defaultSettings } from "../shared/defaults.ts";
+import { applyActive, displayName, normalizeSettings } from "../shared/models.ts";
 import {
   MAX_INTERVAL_MINUTES,
   MAX_QUESTIONS_PER_STOP,
   MIN_INTERVAL_MINUTES,
   MIN_QUESTIONS_PER_STOP,
 } from "../shared/types.ts";
-import type { ProviderId, Settings } from "../shared/types.ts";
+import type { ModelProfile, ProviderId, Settings } from "../shared/types.ts";
 
 interface PageClassList {
   add(...tokens: string[]): void;
@@ -77,6 +78,18 @@ const apiKeyInput = requiredElement("api-key");
 const saveButton = requiredElement("save");
 const testButton = requiredElement("test-key");
 const notice = requiredElement("notice");
+const dom = (globalThis as unknown as { document: Document }).document;
+const savedSelect = dom.getElementById("saved-model") as HTMLSelectElement;
+const nameInput = dom.getElementById("model-name") as HTMLInputElement;
+const nameLabel = dom.getElementById("model-name-label");
+const addModelButton = dom.getElementById("add-model") as HTMLButtonElement;
+const removeModelButton = dom.getElementById("remove-model") as HTMLButtonElement;
+
+let draft: Settings = {
+  ...defaultSettings,
+  models: defaultSettings.models.map((model) => ({ ...model })),
+};
+let editingId = draft.activeModelId;
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -85,6 +98,51 @@ form.addEventListener("submit", (event) => {
 
 providerInput.addEventListener("change", () => {
   syncBaseUrlField();
+});
+
+savedSelect.addEventListener("change", () => {
+  draft = storeForm(draft, editingId);
+  editingId = savedSelect.value;
+  paintSavedModels();
+  fillProfile(profileById(draft, editingId));
+});
+
+nameInput.addEventListener("input", () => {
+  const option = savedSelect.selectedOptions[0];
+  if (!option) return;
+  const typed = nameInput.value.trim();
+  option.textContent = typed === "" ? "Untitled model" : typed;
+});
+
+addModelButton.addEventListener("click", () => {
+  draft = storeForm(draft, editingId);
+  const profile: ModelProfile = {
+    id: `model-${Date.now()}`,
+    name: "",
+    provider: "openai-compatible",
+    model: "",
+    baseUrl: "",
+    apiKey: "",
+  };
+  draft = { ...draft, models: [...draft.models, profile] };
+  editingId = profile.id;
+  paintSavedModels();
+  fillProfile(profile);
+  nameInput.focus();
+});
+
+removeModelButton.addEventListener("click", () => {
+  if (draft.models.length <= 1) {
+    showNotice("Keep at least one model.", "miss");
+    return;
+  }
+  const models = draft.models.filter((model) => model.id !== editingId);
+  const next = models[0];
+  if (!next) return;
+  editingId = next.id;
+  draft = applyActive({ ...draft, models }, editingId);
+  paintSavedModels();
+  fillProfile(next);
 });
 
 testButton.addEventListener("click", () => {
@@ -97,7 +155,9 @@ void loadSettings();
 async function loadSettings(): Promise<void> {
   try {
     const stored = await chrome.storage.local.get([RECALL_SETTINGS_KEY]);
-    fillForm(normalizeSettings(stored[RECALL_SETTINGS_KEY]));
+    draft = normalizeSettings(stored[RECALL_SETTINGS_KEY]);
+    editingId = draft.activeModelId;
+    fillForm(draft);
   } catch (err) {
     showNotice(errorText(err, "Could not load settings."), "miss");
   } finally {
@@ -106,13 +166,35 @@ async function loadSettings(): Promise<void> {
 }
 
 async function saveSettings(): Promise<void> {
-  const settings = readForm();
-  const pattern = hostPermissionPattern(settings);
-  if (
-    settings.provider === "openai-compatible" &&
-    settings.baseUrl !== "" &&
-    pattern === null
-  ) {
+  const provider = isProvider(providerInput.value) ? providerInput.value : "openai";
+  if (provider === "openai-compatible" && nameInput.value.trim() === "") {
+    showNotice("Name this provider so Recall can say which one it is calling.", "miss");
+    nameInput.focus();
+    return;
+  }
+  draft = applyActive(
+    storeForm(
+      {
+        ...draft,
+        intervalMinutes: readCount(
+          intervalInput,
+          MIN_INTERVAL_MINUTES,
+          MAX_INTERVAL_MINUTES,
+          defaultSettings.intervalMinutes,
+        ),
+        questionsPerStop: readCount(
+          questionsInput,
+          MIN_QUESTIONS_PER_STOP,
+          MAX_QUESTIONS_PER_STOP,
+          defaultSettings.questionsPerStop,
+        ),
+      },
+      editingId,
+    ),
+    editingId,
+  );
+  const pattern = hostPermissionPattern(draft);
+  if (draft.provider === "openai-compatible" && draft.baseUrl !== "" && pattern === null) {
     showNotice("Enter a full http or https address.", "miss");
     baseUrlInput.focus();
     return;
@@ -127,13 +209,13 @@ async function saveSettings(): Promise<void> {
       try {
         denied = (await permissionRequest) !== true;
       } catch (err) {
-        await chrome.storage.local.set({ [RECALL_SETTINGS_KEY]: settings });
+        await chrome.storage.local.set({ [RECALL_SETTINGS_KEY]: draft });
         showNotice(errorText(err, "Could not ask for that address."), "miss");
         return;
       }
     }
-    await chrome.storage.local.set({ [RECALL_SETTINGS_KEY]: settings });
-    fillForm(settings);
+    await chrome.storage.local.set({ [RECALL_SETTINGS_KEY]: draft });
+    fillForm(draft);
     if (denied) {
       showNotice(
         "Permission denied. Settings are saved, and Recall cannot call that address.",
@@ -141,7 +223,8 @@ async function saveSettings(): Promise<void> {
       );
       return;
     }
-    showNotice("Saved.", "ok");
+    const active = profileById(draft, draft.activeModelId);
+    showNotice(`Saved. Recall will call ${displayName(active)}.`, "ok");
   } catch (err) {
     showNotice(errorText(err, "Could not save."), "miss");
   } finally {
@@ -163,67 +246,64 @@ async function testKey(): Promise<void> {
   }
 }
 
-function readForm(): Settings {
+function storeForm(settings: Settings, id: string): Settings {
+  const profile = readProfileFromForm(id);
+  const models = settings.models.some((model) => model.id === id)
+    ? settings.models.map((model) => (model.id === id ? profile : model))
+    : [...settings.models, profile];
+  return { ...settings, models };
+}
+
+function readProfileFromForm(id: string): ModelProfile {
+  const provider = isProvider(providerInput.value) ? providerInput.value : "openai";
+  const baseUrl = provider === "openai-compatible" ? baseUrlInput.value.trim() : "";
   return {
-    intervalMinutes: readCount(
-      intervalInput,
-      MIN_INTERVAL_MINUTES,
-      MAX_INTERVAL_MINUTES,
-      defaultSettings.intervalMinutes,
-    ),
-    questionsPerStop: readCount(
-      questionsInput,
-      MIN_QUESTIONS_PER_STOP,
-      MAX_QUESTIONS_PER_STOP,
-      defaultSettings.questionsPerStop,
-    ),
-    provider: isProvider(providerInput.value)
-      ? providerInput.value
-      : defaultSettings.provider,
+    id,
+    name: nameInput.value.trim(),
+    provider,
     model: modelInput.value.trim(),
-    baseUrl: baseUrlInput.value.trim(),
+    baseUrl,
     apiKey: apiKeyInput.value.trim(),
   };
+}
+
+function profileById(settings: Settings, id: string): ModelProfile {
+  return settings.models.find((model) => model.id === id) ?? settings.models[0] ?? defaultSettings.models[0];
 }
 
 function fillForm(settings: Settings): void {
   intervalInput.value = String(settings.intervalMinutes);
   questionsInput.value = String(settings.questionsPerStop);
-  providerInput.value = settings.provider;
-  modelInput.value = settings.model;
-  baseUrlInput.value = settings.baseUrl;
-  apiKeyInput.value = settings.apiKey;
+  editingId = settings.activeModelId;
+  paintSavedModels();
+  fillProfile(profileById(settings, settings.activeModelId));
+}
+
+function fillProfile(profile: ModelProfile): void {
+  nameInput.value = profile.name;
+  providerInput.value = profile.provider;
+  modelInput.value = profile.model;
+  baseUrlInput.value = profile.baseUrl;
+  apiKeyInput.value = profile.apiKey;
   syncBaseUrlField();
 }
 
-function syncBaseUrlField(): void {
-  baseUrlField.hidden = providerInput.value !== "openai-compatible";
+function paintSavedModels(): void {
+  const selected = editingId;
+  savedSelect.replaceChildren();
+  for (const model of draft.models) {
+    const option = dom.createElement("option");
+    option.value = model.id;
+    option.textContent = model.name.trim() === "" ? "Untitled model" : model.name;
+    savedSelect.append(option);
+  }
+  if (draft.models.some((model) => model.id === selected)) savedSelect.value = selected;
 }
 
-function normalizeSettings(value: unknown): Settings {
-  const fallback = defaultSettings;
-  if (value === null || typeof value !== "object") {
-    return { ...fallback };
-  }
-  const raw = value as Record<string, unknown>;
-  return {
-    intervalMinutes: clampUnknown(
-      raw.intervalMinutes,
-      MIN_INTERVAL_MINUTES,
-      MAX_INTERVAL_MINUTES,
-      fallback.intervalMinutes,
-    ),
-    questionsPerStop: clampUnknown(
-      raw.questionsPerStop,
-      MIN_QUESTIONS_PER_STOP,
-      MAX_QUESTIONS_PER_STOP,
-      fallback.questionsPerStop,
-    ),
-    provider: isProvider(raw.provider) ? raw.provider : fallback.provider,
-    model: typeof raw.model === "string" ? raw.model : fallback.model,
-    baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl : fallback.baseUrl,
-    apiKey: typeof raw.apiKey === "string" ? raw.apiKey : fallback.apiKey,
-  };
+function syncBaseUrlField(): void {
+  const compatible = providerInput.value === "openai-compatible";
+  baseUrlField.hidden = !compatible;
+  if (nameLabel) nameLabel.textContent = compatible ? "Provider name" : "Name";
 }
 
 /**
@@ -310,6 +390,10 @@ function setBusy(busy: boolean): void {
   modelInput.disabled = busy;
   baseUrlInput.disabled = busy;
   apiKeyInput.disabled = busy;
+  savedSelect.disabled = busy;
+  nameInput.disabled = busy;
+  addModelButton.disabled = busy;
+  removeModelButton.disabled = busy;
 }
 
 function readCount(input: PageNode, min: number, max: number, fallback: number): number {
