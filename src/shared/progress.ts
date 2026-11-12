@@ -19,7 +19,9 @@ export interface WaitSnapshot {
 
 const ORDER: WaitStepId[] = ["transcript", "calling", "writing", "checking"];
 
-export function providerLabel(settings: Pick<Settings, "provider" | "baseUrl">): string {
+export function providerLabel(settings: Pick<Settings, "provider" | "baseUrl"> & { name?: string }): string {
+  const named = settings.name?.trim() ?? "";
+  if (named !== "") return named;
   if (settings.provider === "gemini") return "Gemini";
   if (settings.provider === "openai") return "OpenAI";
   try {

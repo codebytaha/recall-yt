@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Recall</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="rail" aria-label="Notebooks">
+        <p class="mark">Recall</p>
+        <button type="button" id="add-notebook">Add notebook</button>
+        <p class="rail-label">Notebooks</p>
+        <nav id="notebooks"></nav>
+        <div id="lesson-list"></div>
+      </aside>
+      <main>
+        <header class="top">
+          <h1 id="heading">Lessons</h1>
+          <form id="add-video" class="add">
+            <label class="sr" for="video-url">YouTube link</label>
+            <input id="video-url" type="url" placeholder="Paste a YouTube link" />
+            <button type="submit">Add video</button>
+          </form>
+        </header>
+        <div class="tabs" role="tablist" aria-label="Lesson tools">
+          <button type="button" class="tab" data-tab="videos" role="tab" aria-selected="true">Videos</button>
+          <button type="button" class="tab" data-tab="quiz" role="tab" aria-selected="false">Multi-choice</button>
+          <button type="button" class="tab" data-tab="short" role="tab" aria-selected="false">Short answer</button>
+          <button type="button" class="tab" data-tab="cards" role="tab" aria-selected="false">Flashcards</button>
+          <button type="button" class="tab" data-tab="exam" role="tab" aria-selected="false">Exam</button>
+        </div>
+        <section id="panel" aria-live="polite"></section>
+      </main>
+    </div>
+    <script type="module" src="dashboard.ts"></script>
+  </body>
+</html>

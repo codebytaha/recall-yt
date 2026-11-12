@@ -55,6 +55,7 @@ interface ChromeLike {
   };
   runtime: {
     openOptionsPage(): Promise<void>;
+    getURL(path: string): string;
   };
 }
 
@@ -83,6 +84,14 @@ armedInput.addEventListener("change", () => {
 
 settingsButton.addEventListener("click", () => {
   void chrome.runtime.openOptionsPage();
+});
+
+const dashboardButton = requiredElement("dashboard");
+dashboardButton.addEventListener("click", () => {
+  const tabsApi = (chrome as ChromeLike & { tabs?: { create(options: { url: string }): Promise<unknown> } }).tabs;
+  const url = chrome.runtime.getURL("dashboard.html");
+  if (tabsApi) void tabsApi.create({ url });
+  else window.open(url);
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {

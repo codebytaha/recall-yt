@@ -39,6 +39,15 @@
           />
         </div>
         <div class="field">
+          <label for="saved-model">Saved models</label>
+          <select id="saved-model"></select>
+        </div>
+        <div class="field">
+          <label for="model-name" id="model-name-label">Name</label>
+          <input id="model-name" type="text" autocomplete="off" spellcheck="false" />
+          <p class="quiet">An OpenAI-compatible provider needs a name. Recall says that name while it is calling.</p>
+        </div>
+        <div class="field">
           <label for="provider">Provider</label>
           <select id="provider" name="provider">
             <option value="openai">OpenAI</option>
@@ -82,6 +91,8 @@
         </div>
         <div class="actions">
           <button type="submit" id="save">Save</button>
+          <button type="button" id="add-model">Add model</button>
+          <button type="button" id="remove-model">Remove</button>
           <button type="button" id="test-key">Test key</button>
         </div>
         <p id="notice" class="notice" role="status" aria-live="polite"></p>

@@ -18,6 +18,8 @@
  */
 
 import { RECALL_SETTINGS_KEY, defaultSettings } from "../shared/defaults.ts";
+import { normalizeSettings } from "../shared/models.ts";
+import { INBOX_ID, RECALL_LIBRARY_KEY, readLibrary, upsertLesson } from "../shared/library.ts";
 import { RECALL_CARDS_KEY, cardFromQuestion, cardId, gradeCard, readCardStore } from "../shared/review.ts";
 import {
   DEFAULT_INTERVAL_MINUTES,
@@ -69,6 +71,7 @@ interface LiveSettings {
   questionsPerStop: number;
   provider: "openai" | "gemini" | "openai-compatible";
   baseUrl: string;
+  name: string;
 }
 
 interface RecallStatus {
@@ -237,6 +240,7 @@ async function adopt(): Promise<void> {
     applySavedStatus(next);
     if (cueBuffer?.videoId === videoId) next.cues = cueBuffer.cues;
     session = next;
+    void trackLesson(videoId);
   }
 
   const video = await waitForVideo(token);
@@ -952,6 +956,24 @@ function finishLive(action: "continue" | "dismiss"): void {
   if (action === "continue" && kind === "checkpoint" && queued) showRecap();
 }
 
+function trackLesson(id: string): void {
+  const api = browserOrNull();
+  if (!api) return;
+  const title = document.title.replace(/ - YouTube$/u, "").trim() || "Untitled lesson";
+  persistQueue = persistQueue.catch(() => undefined).then(async () => {
+    const stored = await api.storage.local.get([RECALL_LIBRARY_KEY]);
+    const library = readLibrary(stored[RECALL_LIBRARY_KEY]);
+    const existing = library.lessons.find((lesson) => lesson.videoId === id);
+    const next = upsertLesson(library, {
+      videoId: id,
+      title,
+      notebookId: existing?.notebookId ?? INBOX_ID,
+      updatedAt: Date.now(),
+    });
+    await api.storage.local.set({ [RECALL_LIBRARY_KEY]: next });
+  });
+}
+
 function rememberCards(quiz: Quiz, attempts: Attempt[]): void {
   const correctById = new Map(attempts.map((attempt) => [attempt.questionId, attempt.correct]));
   const api = browserOrNull();
@@ -1514,23 +1536,13 @@ function readWorkerResult(value: unknown): { error: string } | { questions: unkn
 }
 
 function settingsFrom(value: unknown): LiveSettings {
-  const record = isRecord(value) ? value : {};
+  const settings = normalizeSettings(value);
   return {
-    intervalMinutes: clampInt(
-      record.intervalMinutes ?? defaultSettings.intervalMinutes,
-      MIN_INTERVAL_MINUTES,
-      MAX_INTERVAL_MINUTES,
-      DEFAULT_INTERVAL_MINUTES,
-    ),
-    questionsPerStop: clampInt(
-      record.questionsPerStop ?? defaultSettings.questionsPerStop,
-      MIN_QUESTIONS_PER_STOP,
-      MAX_QUESTIONS_PER_STOP,
-      DEFAULT_QUESTIONS_PER_STOP,
-    ),
-    provider:
-      record.provider === "gemini" || record.provider === "openai-compatible" ? record.provider : "openai",
-    baseUrl: typeof record.baseUrl === "string" ? record.baseUrl : "",
+    intervalMinutes: settings.intervalMinutes,
+    questionsPerStop: settings.questionsPerStop,
+    provider: settings.provider,
+    baseUrl: settings.baseUrl,
+    name: settings.name,
   };
 }
 

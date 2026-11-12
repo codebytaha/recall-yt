@@ -14,25 +14,52 @@ export const MIN_QUESTIONS_PER_STOP = 1;
 export const MAX_QUESTIONS_PER_STOP = 8;
 export const DEFAULT_QUESTIONS_PER_STOP = 4;
 
+export interface ModelProfile {
+  id: string;
+  name: string;
+  provider: ProviderId;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
 export interface Settings {
   /** 1–60. Default 10. */
   intervalMinutes: number;
   /** 1–8. Default 4. */
   questionsPerStop: number;
+  /** Which saved model Recall calls. */
+  activeModelId: string;
+  models: ModelProfile[];
+  /** Copied from the active model so callers can read one connection. */
   provider: ProviderId;
   model: string;
   /** Sent only when provider is openai-compatible. */
   baseUrl: string;
   apiKey: string;
+  /** Shown while Recall is calling. For an OpenAI-compatible host this is the name you saved. */
+  name: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   intervalMinutes: DEFAULT_INTERVAL_MINUTES,
   questionsPerStop: DEFAULT_QUESTIONS_PER_STOP,
+  activeModelId: "default",
+  models: [
+    {
+      id: "default",
+      name: "OpenAI",
+      provider: "openai",
+      model: "",
+      baseUrl: "",
+      apiKey: "",
+    },
+  ],
   provider: "openai",
   model: "",
   baseUrl: "",
   apiKey: "",
+  name: "OpenAI",
 };
 
 export interface Question {
