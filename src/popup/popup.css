@@ -106,9 +106,67 @@ button:hover {
 }
 
 input:focus,
-button:focus {
+button:focus,
+select:focus {
   outline: 2px solid var(--ink);
   outline-offset: 3px;
+}
+
+h2 {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--soft);
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.row button,
+select,
+.choices button {
+  min-height: 44px;
+}
+
+.row button {
+  flex: 1;
+}
+
+select,
+.jump {
+  font-family: system-ui, sans-serif;
+  font-size: 0.875rem;
+}
+
+select {
+  width: 100%;
+  padding: 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.choices button {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+}
+
+#review-prompt {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.35;
 }
 
 @media (prefers-reduced-motion: reduce) {
