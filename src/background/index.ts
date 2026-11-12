@@ -2,17 +2,15 @@
 
 import {
   ProviderConfigError,
-  buildProviderRequest,
   buildTestKeyRequest,
-  extractModelText,
-  parseModelQuestions,
 } from "./providers.ts";
 import type { ProviderConfigCode, ProviderHttpRequest } from "./providers.ts";
 import { RECALL_SETTINGS_KEY, defaultSettings } from "../shared/defaults.ts";
-import { buildQuizPrompt } from "../shared/prompt.ts";
 import { MAX_QUESTIONS_PER_STOP, MIN_QUESTIONS_PER_STOP } from "../shared/types.ts";
 import type { Cue, Quiz, Settings } from "../shared/types.ts";
-import { validateQuiz } from "../shared/validate-quiz.ts";
+import { MODEL_REQUEST_MS } from "../shared/windows.ts";
+import { runQuizGeneration } from "./quiz-run.ts";
+import type { PhaseNotice } from "./quiz-run.ts";
 
 export type { ProviderConfigCode };
 
@@ -21,7 +19,8 @@ export type WorkerErrorCode =
   | "bad-request"
   | "invalid-quiz"
   | "request-failed"
-  | "unauthorized";
+  | "unauthorized"
+  | "timed-out";
 
 export interface GenerateQuizMessage {
   type: "GENERATE_QUIZ";
@@ -46,12 +45,10 @@ export type TestKeyResponse = { ok: true } | WorkerFailure;
 
 export type WorkerResponse = GenerateQuizResponse | TestKeyResponse;
 
-const QUIZ_ATTEMPTS = 2;
-
 class HttpFailure extends Error {
-  readonly code: "request-failed" | "unauthorized";
+  readonly code: "request-failed" | "unauthorized" | "timed-out";
 
-  constructor(code: "request-failed" | "unauthorized") {
+  constructor(code: "request-failed" | "unauthorized" | "timed-out") {
     super(code);
     this.name = "HttpFailure";
     this.code = code;
@@ -59,9 +56,26 @@ class HttpFailure extends Error {
 }
 
 /**
- * MV3 service worker. Request/response only: no alarms and no timers.
- * The api key is read from chrome.storage.local and is never copied onto a response.
+ * MV3 service worker. No alarms and no timers.
+ * Quiz generation reports phases on the recall-quiz port, then one result.
+ * The api key is read from chrome.storage.local and is never copied onto a message.
  */
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "recall-quiz") return;
+  port.onMessage.addListener((message) => {
+    void generateQuiz(message, (notice) => {
+      port.postMessage({ type: "progress", phase: notice.phase, label: notice.label });
+    }).then(
+      (response) => {
+        port.postMessage({ type: "result", ...response });
+      },
+      () => {
+        port.postMessage({ type: "result", ok: false, error: "request-failed" });
+      },
+    );
+  });
+});
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (messageType(message) == null) return false;
   void handleWorkerMessage(message).then(
@@ -82,36 +96,19 @@ export async function handleWorkerMessage(message: unknown): Promise<WorkerRespo
   return undefined;
 }
 
-async function generateQuiz(message: unknown): Promise<GenerateQuizResponse> {
+async function generateQuiz(
+  message: unknown,
+  onPhase?: (notice: PhaseNotice) => void,
+): Promise<GenerateQuizResponse> {
   const parsed = readGenerateMessage(message);
   if (parsed == null) return { ok: false, error: "bad-request" };
-
   const settings = await readSettings();
-  let request: ProviderHttpRequest;
-  try {
-    request = buildProviderRequest(
-      settings,
-      buildQuizPrompt({
-        cues: parsed.cues,
-        startMs: parsed.startMs,
-        endMs: parsed.endMs,
-        questionCount: parsed.questionsPerStop,
-      }),
-    );
-  } catch (error) {
-    return { ok: false, error: configCode(error) };
-  }
-
-  for (let attempt = 0; attempt < QUIZ_ATTEMPTS; attempt += 1) {
-    try {
-      const payload = await callProvider(request);
-      const quiz = groundQuiz(payload, parsed);
-      if (quiz != null) return { ok: true, quiz };
-    } catch (error) {
-      if (error instanceof HttpFailure) return { ok: false, error: error.code };
-    }
-  }
-  return { ok: false, error: "invalid-quiz" };
+  return runQuizGeneration({
+    settings,
+    job: parsed,
+    call: callProvider,
+    onPhase,
+  });
 }
 
 async function testSavedKey(): Promise<TestKeyResponse> {
@@ -132,35 +129,24 @@ async function testSavedKey(): Promise<TestKeyResponse> {
   }
 }
 
-function groundQuiz(payload: unknown, message: GenerateQuizMessage): Quiz | null {
-  if (isRecord(payload) && payload.error != null && extractModelText(payload) == null) {
-    throw new HttpFailure("request-failed");
-  }
-  const text = extractModelText(payload);
-  if (text == null || text.trim() === "") return null;
-  const questions = parseModelQuestions(text);
-  const result = validateQuiz({
-    videoId: message.videoId,
-    startMs: message.startMs,
-    endMs: message.endMs,
-    cues: message.cues,
-    expectedCount: message.questionsPerStop,
-    questions,
-  });
-  if (!result.ok) return null;
-  return result.quiz;
-}
-
 async function callProvider(request: ProviderHttpRequest): Promise<unknown> {
+  const stopKeepAlive = keepWorkerAlive();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MODEL_REQUEST_MS);
   let response: Awaited<ReturnType<typeof fetch>>;
   try {
     response = await fetch(request.url, {
       method: request.method,
       headers: request.headers,
       body: request.method === "POST" ? request.body : undefined,
+      signal: controller.signal,
     });
   } catch {
+    if (controller.signal.aborted) throw new HttpFailure("timed-out");
     throw new HttpFailure("request-failed");
+  } finally {
+    clearTimeout(timer);
+    stopKeepAlive();
   }
   if (!response.ok) {
     await discardBody(response);
@@ -172,6 +158,14 @@ async function callProvider(request: ProviderHttpRequest): Promise<unknown> {
   } catch {
     throw new SyntaxError("invalid-quiz");
   }
+}
+
+function keepWorkerAlive(): () => void {
+  const timer = setInterval(() => {
+    const ask = chrome.runtime.getPlatformInfo;
+    if (typeof ask === "function") void ask();
+  }, 10_000);
+  return () => clearInterval(timer);
 }
 
 async function discardBody(response: { text(): Promise<string> }): Promise<void> {

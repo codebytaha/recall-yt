@@ -33,9 +33,20 @@ import {
   type Quiz,
   type VideoMemory,
 } from "../shared/types.ts";
-import { resolvePlayback, sliceCues } from "../shared/windows.ts";
+import { resolvePlayback, reconcileStop, scheduleStop, sliceCues, MODEL_REQUEST_MS, knownDuration } from "../shared/windows.ts";
+import {
+  failWait,
+  markCalling,
+  markChecking,
+  markRetry,
+  markWriting,
+  openWait,
+  providerLabel,
+  withElapsed,
+  type WaitSnapshot,
+} from "../shared/progress.ts";
 import { validateQuiz } from "../shared/validate-quiz.ts";
-import { mountQuiz, type MountQuizHandle } from "./overlay.ts";
+import { mountProgress, mountQuiz, viewFromWait, type MountQuizHandle, type ProgressButton, type ProgressHandle } from "./overlay.ts";
 
 const ARMED_KEY = "recallArmed";
 const STATUS_KEY = "recallStatus";
@@ -50,17 +61,20 @@ const REPLAY_LEAD_MS = 2_000;
 const INSTALLED = "__recallIsolatedContent";
 
 type MemoryStore = Record<string, VideoMemory>;
-type WorkerError = "missing-key" | "invalid-quiz" | "request-failed";
 type LiveKind = "checkpoint" | "recap";
 
 interface LiveSettings {
   intervalMinutes: number;
   questionsPerStop: number;
+  provider: "openai" | "gemini" | "openai-compatible";
+  baseUrl: string;
 }
 
 interface RecallStatus {
   videoId: string;
-  nextCheckpointMs: number;
+  nextCheckpointMs: number | null;
+  scheduledStopMs: number | null;
+  anchorMs: number | null;
   lastScore: { correct: number; total: number } | null;
 }
 
@@ -69,6 +83,7 @@ interface Session {
   cues: Cue[];
   previousTimeMs: number;
   nextStopMs: number;
+  anchorMs: number;
   hasSavedStop: boolean;
   clockPrimed: boolean;
   memory: VideoMemory;
@@ -98,6 +113,7 @@ interface BrowserNamespace {
   runtime: {
     sendMessage(message: unknown): Promise<unknown>;
     openOptionsPage(): Promise<void>;
+    connect?(info: { name: string }): RecallPort;
   };
 }
 
@@ -105,6 +121,13 @@ interface MessageButton {
   label: string;
   secondary?: boolean;
   onClick: () => void;
+}
+
+interface RecallPort {
+  postMessage(message: unknown): void;
+  disconnect(): void;
+  onMessage: { addListener(listener: (message: unknown) => void): void };
+  onDisconnect: { addListener(listener: () => void): void };
 }
 
 const installed = globalThis as Record<string, boolean>;
@@ -136,6 +159,12 @@ let recapQueued = false;
 let navToken = 0;
 let cueBuffer: { videoId: string; cues: Cue[] } | null = null;
 let persistQueue: Promise<void> = Promise.resolve();
+let progressHandle: ProgressHandle | null = null;
+let waitSnapshot: WaitSnapshot | null = null;
+let waitButtons: ProgressButton[] = [];
+let waitTimer = 0;
+let waitStarted = 0;
+let quizPort: RecallPort | null = null;
 
 async function boot(): Promise<void> {
   window.addEventListener("keydown", onWindowKey, true);
@@ -198,6 +227,7 @@ function createSession(videoId: string): Session {
     cues: [],
     previousTimeMs: 0,
     nextStopMs: 0,
+    anchorMs: 0,
     hasSavedStop: false,
     clockPrimed: false,
     memory: emptyVideoMemory(videoId),
@@ -207,9 +237,15 @@ function createSession(videoId: string): Session {
 
 function applySavedStatus(next: Session): void {
   if (!savedStatus || savedStatus.videoId !== next.videoId) return;
-  if (savedStatus.nextCheckpointMs > 0) {
-    next.nextStopMs = savedStatus.nextCheckpointMs;
+  const restoredStop = savedStatus.scheduledStopMs ?? savedStatus.nextCheckpointMs;
+  if (restoredStop !== null && restoredStop > 0) {
+    next.nextStopMs = restoredStop;
     next.hasSavedStop = true;
+  }
+  if (savedStatus.anchorMs !== null) {
+    next.anchorMs = savedStatus.anchorMs;
+  } else if (restoredStop !== null && restoredStop > 0) {
+    next.anchorMs = Math.max(0, restoredStop - intervalMs());
   }
   next.lastScore = savedStatus.lastScore;
 }
@@ -217,8 +253,14 @@ function applySavedStatus(next: Session): void {
 function primeClock(video: HTMLVideoElement): void {
   if (!session || session.clockPrimed) return;
   const now = playbackMs(video);
+  const length = mediaDurationMs(video);
   session.previousTimeMs = now;
-  if (!session.hasSavedStop) session.nextStopMs = now + intervalMs();
+  if (!session.hasSavedStop) {
+    session.anchorMs = now;
+    session.nextStopMs = scheduleStop(now, intervalMs(), length);
+  } else {
+    session.nextStopMs = reconcileStop(session.anchorMs, session.nextStopMs, intervalMs(), length);
+  }
   session.clockPrimed = true;
   persist();
 }
@@ -266,7 +308,8 @@ function onStorage(changes: Record<string, StorageChange>, areaName: string): vo
     ) {
       const now = playbackMs(boundVideo);
       session.previousTimeMs = now;
-      session.nextStopMs = now + intervalMs();
+      session.anchorMs = now;
+      session.nextStopMs = scheduleStop(now, intervalMs(), mediaDurationMs(boundVideo));
       persist();
     }
     renderChip();
@@ -318,11 +361,22 @@ function onTimeUpdate(): void {
     return;
   }
 
+  const reconciled = reconcileStop(
+    session.anchorMs,
+    session.nextStopMs,
+    intervalMs(),
+    mediaDurationMs(video),
+  );
+  if (reconciled !== session.nextStopMs) {
+    session.nextStopMs = reconciled;
+    persist();
+  }
+
   // No cues yet. Keep a single due stop on the playhead so the first quiz
   // after captions arrive is the stretch that just played. resolvePlayback
   // still decides that window; this only stops older stops from piling up.
   if (session.cues.length === 0) {
-    if (now >= session.nextStopMs) session.nextStopMs = now;
+    if (now >= session.nextStopMs) session.nextStopMs = scheduleStop(now, intervalMs(), mediaDurationMs(video));
     session.previousTimeMs = now;
     return;
   }
@@ -334,10 +388,13 @@ function onTimeUpdate(): void {
     previousTimeMs: session.previousTimeMs,
     currentTimeMs: now,
     nextStopMs: session.nextStopMs,
+    anchorMs: session.anchorMs,
     intervalMs: intervalMs(),
+    durationMs: mediaDurationMs(video),
     finished: finishedWindows(session),
   });
   session.previousTimeMs = now;
+  session.anchorMs = decision.anchorMs;
   session.nextStopMs = decision.nextStopMs;
 
   if (!decision.checkpoint) {
@@ -385,9 +442,96 @@ function beginQuiz(checkpoint: Checkpoint, cues: readonly Cue[]): void {
 
 async function requestQuiz(windowDue: DueWindow): Promise<void> {
   const gen = ++generation;
-  showCoverMessage("Preparing the questions.", [
-    { label: "Not watching", secondary: true, onClick: resumeWithoutCheckpoint },
-  ]);
+  releaseWait();
+  if (!cover) return;
+  const label = providerLabel(settings);
+  waitSnapshot = openWait({
+    providerLabel: label,
+    lineCount: windowDue.cues.length,
+    startMs: windowDue.checkpoint.startMs,
+    endMs: windowDue.checkpoint.endMs,
+  });
+  waitButtons = [notWatchingButton()];
+  progressHandle = mountProgress(cover, viewFromWait(waitSnapshot, waitButtons));
+  await paintFrame();
+  await paintFrame();
+  if (gen !== generation || !cover || !progressHandle || !waitSnapshot) return;
+  waitSnapshot = markCalling(waitSnapshot, label);
+  progressHandle.update(viewFromWait(waitSnapshot, waitButtons));
+  waitStarted = Date.now();
+  waitTimer = window.setInterval(() => {
+    if (gen !== generation || !waitSnapshot || !progressHandle) return;
+    const elapsed = Date.now() - waitStarted;
+    if (elapsed >= MODEL_REQUEST_MS) {
+      showWaitFailure("timed-out");
+      return;
+    }
+    const seconds = Math.floor(elapsed / 1000);
+    const next = withElapsed(waitSnapshot, seconds);
+    if (next === waitSnapshot) return;
+    waitSnapshot = next;
+    progressHandle.update(viewFromWait(waitSnapshot, waitButtons));
+  }, 1000);
+
+  openQuizPort(gen, windowDue, 0);
+}
+
+function openQuizPort(gen: number, windowDue: DueWindow, attempt: number): void {
+  const api = browserOrNull();
+  if (!api?.runtime.connect) {
+    void finishFromMessage(gen, windowDue);
+    return;
+  }
+  let port: RecallPort;
+  try {
+    port = api.runtime.connect({ name: "recall-quiz" });
+  } catch {
+    void finishFromMessage(gen, windowDue);
+    return;
+  }
+  quizPort = port;
+  let settled = false;
+  port.onMessage.addListener((message) => {
+    if (settled || gen !== generation || !isRecord(message) || !waitSnapshot) return;
+    if (message.type === "progress") {
+      waitSnapshot = applyPhase(waitSnapshot, message);
+      progressHandle?.update(viewFromWait(waitSnapshot, waitButtons));
+      return;
+    }
+    if (message.type === "result") {
+      settled = true;
+      presentQuiz(windowDue, message);
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    if (settled || gen !== generation) return;
+    const elapsed = Date.now() - waitStarted;
+    if (attempt < 1 && elapsed < MODEL_REQUEST_MS) {
+      openQuizPort(gen, windowDue, attempt + 1);
+      return;
+    }
+    settled = true;
+    presentQuiz(windowDue, {
+      ok: false,
+      error: elapsed >= MODEL_REQUEST_MS ? "timed-out" : "request-failed",
+    });
+  });
+  try {
+    port.postMessage({
+      type: "GENERATE_QUIZ",
+      videoId: windowDue.checkpoint.videoId,
+      startMs: windowDue.checkpoint.startMs,
+      endMs: windowDue.checkpoint.endMs,
+      cues: windowDue.cues,
+      questionsPerStop: windowDue.questionsPerStop,
+    });
+  } catch {
+    settled = true;
+    void finishFromMessage(gen, windowDue);
+  }
+}
+
+async function finishFromMessage(gen: number, windowDue: DueWindow): Promise<void> {
   const api = browserOrNull();
   let response: unknown;
   try {
@@ -407,25 +551,45 @@ async function requestQuiz(windowDue: DueWindow): Promise<void> {
   presentQuiz(windowDue, response);
 }
 
+function applyPhase(snapshot: WaitSnapshot, message: Record<string, unknown>): WaitSnapshot {
+  const label = typeof message.label === "string" && message.label !== "" ? message.label : providerLabel(settings);
+  if (message.phase === "calling") return markCalling(snapshot, label);
+  if (message.phase === "retrying") return markRetry(snapshot, label);
+  if (message.phase === "writing") return markWriting(snapshot);
+  if (message.phase === "checking") return markChecking(snapshot);
+  return snapshot;
+}
+
+function notWatchingButton(): ProgressButton {
+  return { label: "Not watching", secondary: true, onClick: resumeWithoutCheckpoint };
+}
+
+function paintFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function releaseWait(): void {
+  window.clearInterval(waitTimer);
+  waitTimer = 0;
+  const port = quizPort;
+  quizPort = null;
+  try {
+    port?.disconnect();
+  } catch {
+    // The port is already closed.
+  }
+  progressHandle?.destroy();
+  progressHandle = null;
+  waitSnapshot = null;
+}
+
 function presentQuiz(windowDue: DueWindow, response: unknown): void {
   if (!session) return;
   const parsed = readWorkerResult(response);
   if ("error" in parsed) {
-    if (parsed.error === "missing-key") {
-      showCoverMessage(MISSING_KEY_TEXT, [
-        {
-          label: "Open settings",
-          onClick() {
-            const api = browserOrNull();
-            if (!api) return;
-            void api.runtime.openOptionsPage().catch(() => undefined);
-          },
-        },
-        { label: "Not watching", secondary: true, onClick: resumeWithoutCheckpoint },
-      ]);
-      return;
-    }
-    showQuizFailure();
+    showWaitFailure(parsed.error);
     return;
   }
 
@@ -444,17 +608,69 @@ function presentQuiz(windowDue: DueWindow, response: unknown): void {
     return;
   }
   if (!validated.ok) {
-    showQuizFailure();
+    showWaitFailure("invalid-quiz");
     return;
   }
+  releaseWait();
   mountLiveQuiz(validated.quiz, windowDue.checkpoint, "checkpoint");
 }
 
 function showQuizFailure(): void {
-  showCoverMessage(QUIZ_FAILED_TEXT, [
-    { label: "Try again", onClick: () => { if (due) void requestQuiz(due); } },
-    { label: "Resume without this checkpoint", secondary: true, onClick: resumeWithoutCheckpoint },
-  ]);
+  showWaitFailure("request-failed");
+}
+
+function showWaitFailure(error: string): void {
+  window.clearInterval(waitTimer);
+  waitTimer = 0;
+  generation += 1;
+  const port = quizPort;
+  quizPort = null;
+  try {
+    port?.disconnect();
+  } catch {
+    // The port is already closed.
+  }
+  const note = failureNote(error);
+  const buttons: ProgressButton[] =
+    error === "missing-key" || error === "missing-model" || error === "missing-base-url" || error === "bad-base-url"
+      ? [
+          {
+            label: "Open settings",
+            onClick() {
+              const api = browserOrNull();
+              if (!api) return;
+              void api.runtime.openOptionsPage().catch(() => undefined);
+            },
+          },
+          notWatchingButton(),
+        ]
+      : [
+          {
+            label: "Try again",
+            onClick() {
+              if (due) void requestQuiz(due);
+            },
+          },
+          { label: "Resume without this checkpoint", secondary: true, onClick: resumeWithoutCheckpoint },
+        ];
+  if (!progressHandle || !waitSnapshot) {
+    showCoverMessage(note, buttons);
+    return;
+  }
+  const step = error === "invalid-quiz" ? "checking" : "calling";
+  waitSnapshot = failWait(waitSnapshot, step, note);
+  waitButtons = buttons;
+  progressHandle.update(viewFromWait(waitSnapshot, waitButtons));
+}
+
+function failureNote(error: string): string {
+  if (error === "missing-key") return MISSING_KEY_TEXT;
+  if (error === "missing-model") return "Add a model name in settings.";
+  if (error === "missing-base-url" || error === "bad-base-url") return "The saved endpoint needs a full URL.";
+  if (error === "unauthorized") return "The saved key was refused.";
+  if (error === "invalid-quiz") return "The reply didn't match this stretch.";
+  if (error === "timed-out") return "The model did not answer within 60 seconds.";
+  return QUIZ_FAILED_TEXT;
 }
 
 function mountLiveQuiz(quiz: Quiz, checkpoint: Checkpoint | null, kind: LiveKind): void {
@@ -565,6 +781,7 @@ function resumePlayback(): void {
 
 function closeCover(): void {
   generation += 1;
+  releaseWait();
   quizHandle?.destroy();
   quizHandle = null;
   cover?.remove();
@@ -836,12 +1053,16 @@ function bindVideo(video: HTMLVideoElement): void {
   boundVideo = video;
   video.addEventListener("timeupdate", onTimeUpdate);
   video.addEventListener("ended", onEnded);
+  video.addEventListener("durationchange", onDuration);
+  video.addEventListener("loadedmetadata", onDuration);
 }
 
 function unbindVideo(): void {
   if (!boundVideo) return;
   boundVideo.removeEventListener("timeupdate", onTimeUpdate);
   boundVideo.removeEventListener("ended", onEnded);
+  boundVideo.removeEventListener("durationchange", onDuration);
+  boundVideo.removeEventListener("loadedmetadata", onDuration);
   boundVideo = null;
 }
 
@@ -890,6 +1111,24 @@ function currentVideoId(): string | null {
   return id && id.trim() !== "" ? id : null;
 }
 
+function onDuration(): void {
+  if (!session || !boundVideo || holdClock) return;
+  const next = reconcileStop(
+    session.anchorMs,
+    session.nextStopMs,
+    intervalMs(),
+    mediaDurationMs(boundVideo),
+  );
+  if (next === session.nextStopMs) return;
+  session.nextStopMs = next;
+  persist();
+}
+
+function mediaDurationMs(video: HTMLVideoElement): number {
+  if (!Number.isFinite(video.duration) || video.duration <= 0) return 0;
+  return Math.round(video.duration * 1000);
+}
+
 function playbackMs(video: HTMLVideoElement): number {
   if (!Number.isFinite(video.currentTime)) return 0;
   return Math.max(0, Math.round(video.currentTime * 1000));
@@ -904,7 +1143,8 @@ function applyArmed(next: boolean, resetClock: boolean): void {
   if (resetClock && next && session && boundVideo && !holdClock) {
     const now = playbackMs(boundVideo);
     session.previousTimeMs = now;
-    session.nextStopMs = now + intervalMs();
+    session.anchorMs = now;
+    session.nextStopMs = scheduleStop(now, intervalMs(), boundVideo ? mediaDurationMs(boundVideo) : 0);
     session.hasSavedStop = true;
     persist();
   }
@@ -926,9 +1166,13 @@ async function setArmed(next: boolean): Promise<void> {
 function persist(): void {
   if (!session) return;
   memoryStore[session.videoId] = session.memory;
+  const length = boundVideo ? mediaDurationMs(boundVideo) : 0;
+  const showStop = !knownDuration(length) || session.nextStopMs <= length;
   const status: RecallStatus = {
     videoId: session.videoId,
-    nextCheckpointMs: session.nextStopMs,
+    nextCheckpointMs: showStop ? session.nextStopMs : null,
+    scheduledStopMs: session.nextStopMs,
+    anchorMs: session.anchorMs,
     lastScore: session.lastScore
       ? { correct: session.lastScore.correct, total: session.lastScore.total }
       : null,
@@ -962,17 +1206,11 @@ function snapshotCues(cues: readonly Cue[], startMs: number, endMs: number): Cue
   }));
 }
 
-/**
- * Worker reply is `{ ok: true, quiz }` or `{ ok: false, error }`.
- * `missing-key` is the only error with its own screen. Other codes use the retry screen.
- */
-function readWorkerResult(value: unknown): { error: WorkerError } | { questions: unknown } {
+function readWorkerResult(value: unknown): { error: string } | { questions: unknown } {
   if (Array.isArray(value)) return { questions: value };
   if (!isRecord(value)) return { error: "request-failed" };
-  const code = typeof value.error === "string" ? value.error : typeof value.reason === "string" ? value.reason : null;
-  if (code === "missing-key") return { error: "missing-key" };
-  if (code === "invalid-quiz") return { error: "invalid-quiz" };
-  if (code || value.ok === false) return { error: "request-failed" };
+  if (typeof value.error === "string" && value.error !== "") return { error: value.error };
+  if (value.ok === false) return { error: "request-failed" };
   if (isRecord(value.quiz) && Array.isArray(value.quiz.questions)) return { questions: value.quiz.questions };
   if (Array.isArray(value.questions)) return { questions: value.questions };
   return { error: "request-failed" };
@@ -993,6 +1231,9 @@ function settingsFrom(value: unknown): LiveSettings {
       MAX_QUESTIONS_PER_STOP,
       DEFAULT_QUESTIONS_PER_STOP,
     ),
+    provider:
+      record.provider === "gemini" || record.provider === "openai-compatible" ? record.provider : "openai",
+    baseUrl: typeof record.baseUrl === "string" ? record.baseUrl : "",
   };
 }
 
@@ -1003,12 +1244,22 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
 
 function readStatus(value: unknown): RecallStatus | null {
   if (!isRecord(value) || typeof value.videoId !== "string" || value.videoId.trim() === "") return null;
-  if (typeof value.nextCheckpointMs !== "number" || !Number.isFinite(value.nextCheckpointMs)) return null;
+  const nextCheckpointMs = finiteOrNull(value.nextCheckpointMs);
+  const scheduledStopMs = finiteOrNull(value.scheduledStopMs) ?? nextCheckpointMs;
+  const anchorMs = finiteOrNull(value.anchorMs);
+  if (nextCheckpointMs === null && scheduledStopMs === null && anchorMs === null) return null;
   return {
     videoId: value.videoId,
-    nextCheckpointMs: value.nextCheckpointMs,
+    nextCheckpointMs,
+    scheduledStopMs,
+    anchorMs,
     lastScore: readScore(value.lastScore),
   };
+}
+
+function finiteOrNull(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
 }
 
 function readScore(value: unknown): { correct: number; total: number } | null {

@@ -13,6 +13,7 @@ declare function fetch(
     method?: string;
     headers?: Record<string, string>;
     body?: string;
+    signal?: AbortSignal;
   },
 ): Promise<RecallFetchResponse>;
 
@@ -34,9 +35,23 @@ interface ChromeStorageLocal {
   get(keys: string): Promise<Record<string, unknown>>;
 }
 
+interface ChromePort {
+  name: string;
+  postMessage(message: unknown): void;
+  onMessage: {
+    addListener(listener: (message: unknown) => void): void;
+  };
+}
+
+interface ChromeRuntimeOnConnect {
+  addListener(listener: (port: ChromePort) => void): void;
+}
+
 declare const chrome: {
   runtime: {
     onMessage: ChromeRuntimeOnMessage;
+    onConnect: ChromeRuntimeOnConnect;
+    getPlatformInfo?: () => Promise<unknown>;
   };
   storage: {
     local: ChromeStorageLocal;

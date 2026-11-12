@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Cue } from "../src/shared/types.ts";
 import {
+  FINAL_LEAD_MS,
   MIN_SPEECH_WORDS,
+  reconcileStop,
   resolvePlayback,
+  scheduleStop,
   sliceCues,
   type PlaybackSample,
 } from "../src/shared/windows.ts";
@@ -19,9 +22,12 @@ function words(count: number, startMs: number, endMs: number): Cue {
 }
 
 function sample(overrides: Partial<PlaybackSample> & Pick<PlaybackSample, "cues" | "previousTimeMs" | "currentTimeMs" | "nextStopMs">): PlaybackSample {
+  const nextStopMs = overrides.nextStopMs;
   return {
     videoId: "video-1",
     intervalMs: INTERVAL_MS,
+    durationMs: 0,
+    anchorMs: nextStopMs - INTERVAL_MS,
     finished: [],
     ...overrides,
   };
@@ -161,5 +167,32 @@ describe("resolvePlayback", () => {
 
     assert.equal(decision.checkpoint, null);
     assert.equal(decision.nextStopMs, currentTimeMs + INTERVAL_MS);
+  });
+
+  test("a stop past the video moves to the final 2 seconds", () => {
+    const durationMs = 55 * 60 * 1000;
+    const anchorMs = (49 * 60 + 29) * 1000;
+    const savedStopMs = (59 * 60 + 29) * 1000;
+    const finalStop = durationMs - FINAL_LEAD_MS;
+
+    assert.equal(scheduleStop(anchorMs, INTERVAL_MS, 0), savedStopMs);
+    assert.equal(scheduleStop(anchorMs, INTERVAL_MS, durationMs), finalStop);
+    assert.equal(reconcileStop(anchorMs, savedStopMs, INTERVAL_MS, durationMs), finalStop);
+
+    const decision = resolvePlayback(
+      sample({
+        cues: [words(80, anchorMs, durationMs)],
+        previousTimeMs: finalStop - 1_000,
+        currentTimeMs: durationMs - 500,
+        nextStopMs: savedStopMs,
+        anchorMs,
+        durationMs,
+      }),
+    );
+
+    assert.equal(decision.checkpoint?.status, "pending");
+    assert.equal(decision.checkpoint?.startMs, anchorMs);
+    assert.equal(decision.checkpoint?.endMs, finalStop);
+    assert.ok(decision.nextStopMs > durationMs);
   });
 });

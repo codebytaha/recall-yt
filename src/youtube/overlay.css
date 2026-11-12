@@ -204,11 +204,148 @@
   color: #57534E;
 }
 
+.wait-title {
+  margin: 0;
+  font-family: Palatino, "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 500;
+  color: #1C1917;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: 12px;
+  row-gap: 4px;
+  padding: 12px 0;
+  border-top: 1px solid #E7E0D6;
+}
+
+.step:first-child {
+  border-top: 0;
+}
+
+.mark {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: #E7E0D6;
+}
+
+.step[data-status="done"] .mark {
+  background: #1F6B4A;
+}
+
+.step[data-status="failed"] .mark {
+  background: #9A3412;
+}
+
+.step[data-status="current"] .mark {
+  background: #1C1917;
+  animation: recall-pulse 1.2s ease-in-out infinite;
+}
+
+.step-copy {
+  min-width: 0;
+}
+
+.step-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 22px;
+  color: #1C1917;
+}
+
+.step[data-status="waiting"] .step-title,
+.step[data-status="waiting"] .step-detail {
+  color: #57534E;
+}
+
+.step[data-status="done"] .step-title {
+  color: #1F6B4A;
+}
+
+.step[data-status="failed"] .step-title {
+  color: #9A3412;
+}
+
+.step-detail {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: #57534E;
+}
+
+.track {
+  height: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: #E7E0D6;
+}
+
+.track[hidden] {
+  display: none;
+}
+
+.track > span {
+  display: block;
+  width: 36%;
+  height: 100%;
+  background: #1C1917;
+  animation: recall-slide 1.4s ease-in-out infinite;
+}
+
+.wait-note {
+  margin: 0;
+  font-family: Palatino, "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 18px;
+  line-height: 26px;
+  color: #1C1917;
+}
+
+.wait-note[hidden] {
+  display: none;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes recall-slide {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(280%); }
+}
+
+@keyframes recall-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dialog,
   .choice,
   .button,
-  .dismiss {
+  .dismiss,
+  .mark,
+  .track > span {
     transition: none;
     animation: none;
   }

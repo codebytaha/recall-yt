@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import type { Question, Quiz } from "../shared/types.ts";
+import type { WaitSnapshot, WaitStep, WaitStepId } from "../shared/progress.ts";
 
 /**
  * Shadow CSS for the quiz dialog. This string must match src/youtube/overlay.css.
@@ -213,11 +214,148 @@ export const OVERLAY_CSS = `:host {
   color: #57534E;
 }
 
+.wait-title {
+  margin: 0;
+  font-family: Palatino, "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 500;
+  color: #1C1917;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: 12px;
+  row-gap: 4px;
+  padding: 12px 0;
+  border-top: 1px solid #E7E0D6;
+}
+
+.step:first-child {
+  border-top: 0;
+}
+
+.mark {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: #E7E0D6;
+}
+
+.step[data-status="done"] .mark {
+  background: #1F6B4A;
+}
+
+.step[data-status="failed"] .mark {
+  background: #9A3412;
+}
+
+.step[data-status="current"] .mark {
+  background: #1C1917;
+  animation: recall-pulse 1.2s ease-in-out infinite;
+}
+
+.step-copy {
+  min-width: 0;
+}
+
+.step-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 22px;
+  color: #1C1917;
+}
+
+.step[data-status="waiting"] .step-title,
+.step[data-status="waiting"] .step-detail {
+  color: #57534E;
+}
+
+.step[data-status="done"] .step-title {
+  color: #1F6B4A;
+}
+
+.step[data-status="failed"] .step-title {
+  color: #9A3412;
+}
+
+.step-detail {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: #57534E;
+}
+
+.track {
+  height: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: #E7E0D6;
+}
+
+.track[hidden] {
+  display: none;
+}
+
+.track > span {
+  display: block;
+  width: 36%;
+  height: 100%;
+  background: #1C1917;
+  animation: recall-slide 1.4s ease-in-out infinite;
+}
+
+.wait-note {
+  margin: 0;
+  font-family: Palatino, "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 18px;
+  line-height: 26px;
+  color: #1C1917;
+}
+
+.wait-note[hidden] {
+  display: none;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes recall-slide {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(280%); }
+}
+
+@keyframes recall-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dialog,
   .choice,
   .button,
-  .dismiss {
+  .dismiss,
+  .mark,
+  .track > span {
     transition: none;
     animation: none;
   }
@@ -233,6 +371,166 @@ export interface MountQuizOptions {
 
 export interface MountQuizHandle {
   destroy: () => void;
+}
+
+export interface ProgressButton {
+  label: string;
+  secondary?: boolean;
+  onClick: () => void;
+}
+
+export interface ProgressView {
+  title: string;
+  steps: WaitStep[];
+  note: string;
+  buttons: ProgressButton[];
+}
+
+export interface ProgressHandle {
+  update: (view: ProgressView) => void;
+  destroy: () => void;
+}
+
+interface StepNodes {
+  root: HTMLLIElement;
+  title: HTMLElement;
+  detail: HTMLElement;
+  track: HTMLElement;
+}
+
+export function viewFromWait(snapshot: WaitSnapshot, buttons: ProgressButton[]): ProgressView {
+  return {
+    title: snapshot.title,
+    steps: snapshot.steps,
+    note: snapshot.note,
+    buttons,
+  };
+}
+
+export function mountProgress(parent: HTMLElement, view: ProgressView): ProgressHandle {
+  const host = document.createElement("div");
+  host.style.setProperty("all", "initial", "important");
+  host.style.setProperty("display", "block", "important");
+  host.style.setProperty("width", "100%", "important");
+  host.style.setProperty("height", "100%", "important");
+  const shadow = host.attachShadow({ mode: "open" });
+  attachCss(shadow);
+  parent.append(host);
+
+  const dialog = document.createElement("div");
+  dialog.className = "dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "recall-wait-title");
+
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+
+  const kicker = document.createElement("p");
+  kicker.className = "kicker";
+  kicker.textContent = "Recall";
+
+  const title = document.createElement("h1");
+  title.className = "wait-title";
+  title.id = "recall-wait-title";
+
+  const live = document.createElement("p");
+  live.className = "sr";
+  live.setAttribute("aria-live", "polite");
+
+  const list = document.createElement("ol");
+  list.className = "steps";
+
+  const nodes = new Map<WaitStepId, StepNodes>();
+  for (const item of view.steps) {
+    const row = document.createElement("li");
+    row.className = "step";
+    row.dataset.status = item.status;
+    const mark = document.createElement("span");
+    mark.className = "mark";
+    mark.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("div");
+    copy.className = "step-copy";
+    const stepTitle = document.createElement("p");
+    stepTitle.className = "step-title";
+    const detail = document.createElement("p");
+    detail.className = "step-detail";
+    const track = document.createElement("div");
+    track.className = "track";
+    track.setAttribute("aria-hidden", "true");
+    const bar = document.createElement("span");
+    track.append(bar);
+    copy.append(stepTitle, detail, track);
+    row.append(mark, copy);
+    list.append(row);
+    nodes.set(item.id, { root: row, title: stepTitle, detail, track });
+  }
+
+  const note = document.createElement("p");
+  note.className = "wait-note";
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  sheet.append(kicker, title, live, list, note, actions);
+  dialog.append(sheet);
+  shadow.append(dialog);
+
+  let buttonKey = "";
+  let announced = "";
+  let destroyed = false;
+
+  const paint = (next: ProgressView): void => {
+    if (destroyed) return;
+    title.textContent = next.title;
+    note.textContent = next.note;
+    note.hidden = next.note === "";
+    const busy = next.steps.some((item) => item.status === "current");
+    dialog.setAttribute("aria-busy", busy ? "true" : "false");
+    const current = next.steps.find((item) => item.status === "current" || item.status === "failed");
+    if (current && current.title !== announced) {
+      announced = current.title;
+      live.textContent = current.title;
+    }
+    for (const item of next.steps) {
+      const node = nodes.get(item.id);
+      if (!node) continue;
+      node.root.dataset.status = item.status;
+      node.title.textContent = item.title;
+      const showDetail = item.status !== "waiting";
+      node.detail.textContent = showDetail ? item.detail : "";
+      node.detail.hidden = !showDetail;
+      node.track.hidden = item.status !== "current";
+    }
+    const key = next.buttons.map((button) => `${button.secondary ? "s" : "p"}:${button.label}`).join("|");
+    if (key !== buttonKey) {
+      buttonKey = key;
+      actions.replaceChildren();
+      for (const spec of next.buttons) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = spec.secondary ? "button secondary" : "button";
+        button.textContent = spec.label;
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          spec.onClick();
+        });
+        actions.append(button);
+      }
+      actions.querySelector("button")?.focus();
+    }
+  };
+
+  paint(view);
+
+  return {
+    update: paint,
+    destroy() {
+      destroyed = true;
+      host.remove();
+    },
+  };
 }
 
 type FocusTarget = "choice" | "replay";

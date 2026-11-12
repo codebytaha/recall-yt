@@ -1,7 +1,15 @@
 /// <reference lib="dom" />
 
 import type { Quiz } from "../shared/types.ts";
-import { mountQuiz, type MountQuizHandle } from "../youtube/overlay.ts";
+import {
+  markCalling,
+  markChecking,
+  markWriting,
+  openWait,
+  withElapsed,
+  type WaitSnapshot,
+} from "../shared/progress.ts";
+import { mountProgress, mountQuiz, viewFromWait, type MountQuizHandle, type ProgressButton, type ProgressHandle } from "../youtube/overlay.ts";
 
 const quiz: Quiz = {
   videoId: "fixture-video",
@@ -50,25 +58,75 @@ function note(text: string): void {
   if (log instanceof HTMLElement) log.textContent = text;
 }
 
-let mounted: MountQuizHandle | null = mountQuiz(parent, quiz, {
-  onAnswer(question, chosenIndex) {
-    const correct = chosenIndex === question.correctIndex;
-    note(`${correct ? "Correct" : "Missed"} on ${question.id}, choice ${chosenIndex + 1}.`);
-  },
-  onReplay(question) {
-    const atMs = Math.max(0, question.sourceStartMs - 2_000);
-    note(`Replay this moment at ${atMs} ms.`);
-  },
-  onContinue() {
-    note("Continue resumes playback.");
-    mounted?.destroy();
-    mounted = null;
-  },
-  onDismiss() {
-    note("Not watching. Dismissed without scoring.");
-    mounted?.destroy();
-    mounted = null;
-  },
-});
+let mounted: MountQuizHandle | null = null;
+let progress: ProgressHandle | null = null;
 
-note("Answer with keys 1–4, then replay or continue.");
+function showQuiz(): void {
+  progress?.destroy();
+  progress = null;
+  mounted = mountQuiz(parent, quiz, {
+    onAnswer(question, chosenIndex) {
+      const correct = chosenIndex === question.correctIndex;
+      note(`${correct ? "Correct" : "Missed"} on ${question.id}, choice ${chosenIndex + 1}.`);
+    },
+    onReplay(question) {
+      const atMs = Math.max(0, question.sourceStartMs - 2_000);
+      note(`Replay this moment at ${atMs} ms.`);
+    },
+    onContinue() {
+      note("Continue resumes playback.");
+      mounted?.destroy();
+      mounted = null;
+    },
+    onDismiss() {
+      note("Not watching. Dismissed without scoring.");
+      mounted?.destroy();
+      mounted = null;
+    },
+  });
+  note("Answer with keys 1–4, then replay or continue.");
+}
+
+const buttons: ProgressButton[] = [
+  {
+    label: "Not watching",
+    secondary: true,
+    onClick() {
+      note("Not watching. Dismissed without scoring.");
+      window.clearInterval(timer);
+      showQuiz();
+    },
+  },
+];
+
+let wait: WaitSnapshot = openWait({
+  providerLabel: "OpenAI",
+  lineCount: 12,
+  startMs: 600_000,
+  endMs: 1_200_000,
+});
+progress = mountProgress(parent, viewFromWait(wait, buttons));
+note("Getting the transcript.");
+
+const frames: Array<(current: WaitSnapshot) => WaitSnapshot> = [
+  (current) => markCalling(current, "OpenAI"),
+  (current) => withElapsed(current, 2),
+  (current) => markWriting(current),
+  (current) => markChecking(current),
+];
+
+let frame = 0;
+const timer = window.setInterval(() => {
+  if (frame >= frames.length) {
+    window.clearInterval(timer);
+    showQuiz();
+    return;
+  }
+  const advance = frames[frame];
+  frame += 1;
+  if (!advance) return;
+  wait = advance(wait);
+  progress?.update(viewFromWait(wait, buttons));
+  const current = wait.steps.find((step) => step.status === "current");
+  if (current) note(current.title);
+}, 700);
